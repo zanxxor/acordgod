@@ -441,7 +441,7 @@ async function transcribirAuto() {
     const r = await fetch(TRANS_URL + '/transcribir', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ url, letra, titulo: s.title === 'Nueva alabanza' ? '' : s.title })
+      body: JSON.stringify({ url, letra, titulo: s.title === 'Nueva alabanza' ? '' : s.title, acordes_pdf: s.acordesPdf || null })
     });
     const d = await r.json();
     if (!r.ok || d.error) throw new Error(d.error || 'Error desconocido');
@@ -487,8 +487,15 @@ async function extraerDePDF() {
     const r = await fetch(TRANS_URL + '/extraer_pdf', { method: 'POST', body: fd });
     const d = await r.json();
     if (!r.ok || d.error) throw new Error(d.error || 'Error desconocido');
-    if (d.vacio || !d.cuerpo.trim()) {
+    if (d.vacio) {
       alert('No se encontró texto en el PDF. Probablemente es una imagen escaneada (sin texto seleccionable), por lo que no se puede leer automáticamente.');
+      return;
+    }
+    if (d.modo === 'acordes') {
+      s.acordesPdf = d.acordes; s.capoPdf = d.capo || null;
+      persist(); renderFiles();
+      const capoTxt = d.capo ? `\nCapo: traste ${d.capo}.` : '';
+      alert(`Este PDF es un diagrama de digitación de acordes (no trae la letra), pero se identificó la progresión:\n\n${d.acordes.join(' - ')}${capoTxt}\n\nEl sistema ya guardó estos acordes. Ahora escribe/pega tu letra y usa 🎙 Transcribir: el video se analizará usando solo estos acordes, lo que da resultados mucho más precisos.`);
       return;
     }
     s.body = d.cuerpo;
@@ -552,7 +559,12 @@ async function renderFiles() {
   const el = document.getElementById('file-list');
   if (!el || !currentId) return;
   const files = await filesOf(currentId);
-  el.innerHTML = files.map(f =>
+  const s = getCurrent();
+  const aviso = s && s.acordesPdf && s.acordesPdf.length
+    ? `<div style="color:var(--section);font-size:.82rem;margin:6px 0">🎸 Acordes de la partitura: ${esc(s.acordesPdf.join(' - '))}${s.capoPdf ? ` (Capo ${s.capoPdf})` : ''}
+       <span class="del" onclick="quitarAcordesPdf()" title="Quitar">✕</span></div>`
+    : '';
+  el.innerHTML = aviso + files.map(f =>
     `<div class="mark-row">
        <span>${fileIcon(f.type || '')}</span>
        <span class="name" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(f.name)}</span>
@@ -581,6 +593,12 @@ async function downloadFile(id) {
   a.href = URL.createObjectURL(f.blob);
   a.download = f.name;
   a.click();
+}
+
+function quitarAcordesPdf() {
+  const s = getCurrent(); if (!s) return;
+  delete s.acordesPdf; delete s.capoPdf;
+  persist(); renderFiles();
 }
 
 function delFile(id) {

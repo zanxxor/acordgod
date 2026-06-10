@@ -73,7 +73,19 @@ def transcribir_letra(wav: Path) -> list[dict]:
 
 
 # --------------------------------------------------------------- acordes
-def detectar_acordes(wav: Path) -> list[tuple[float, str]]:
+def _normalizar_acorde_simple(token: str) -> tuple[str, bool] | None:
+    """Convierte un nombre de acorde (string) a (raiz_en_sostenidos, es_menor)."""
+    m = re.match(r"^([A-G])([#b]?)(m?)", token)
+    if not m:
+        return None
+    raiz, alt, menor = m.groups()
+    FLATS = ['C', 'Db', 'D', 'Eb', 'E', 'F', 'Gb', 'G', 'Ab', 'A', 'Bb', 'B']
+    nombre = raiz + alt
+    i = FLATS.index(nombre) if nombre in FLATS else NOTAS.index(nombre)
+    return NOTAS[i], bool(menor)
+
+
+def detectar_acordes(wav: Path, permitidos: list[str] | None = None) -> list[tuple[float, str]]:
     """Detecta acordes mayores/menores por análisis de croma sincronizado a beats.
 
     Devuelve lista de (tiempo_inicio, acorde) solo en los cambios de acorde.
@@ -106,6 +118,18 @@ def detectar_acordes(wav: Path) -> list[tuple[float, str]]:
         nombres += [nota, nota + "m"]
     plantillas = np.array(plantillas)
     plantillas = plantillas / np.linalg.norm(plantillas, axis=1, keepdims=True)
+
+    if permitidos:
+        validos = {n for n in (_normalizar_acorde_simple(p) for p in permitidos) if n}
+        if validos:
+            indices_ok = [
+                i for i, nombre in enumerate(nombres)
+                if (nombre.rstrip("m"), nombre.endswith("m")) in validos
+            ]
+            if indices_ok:
+                plantillas = plantillas[indices_ok]
+                nombres = [nombres[i] for i in indices_ok]
+                print(f"   Acordes restringidos a los de la partitura: {', '.join(sorted(set(nombres)))}")
 
     normas = np.linalg.norm(sync, axis=0, keepdims=True)
     normas[normas == 0] = 1

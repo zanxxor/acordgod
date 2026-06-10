@@ -68,8 +68,9 @@ class Handler(BaseHTTPRequestHandler):
                 wav, titulo_video = T.descargar_audio(url)
                 titulo = datos.get("titulo") or titulo_video
                 letra = (datos.get("letra") or "").strip()
+                permitidos = datos.get("acordes_pdf") or None
                 segmentos = T.transcribir_letra(wav)
-                acordes = T.detectar_acordes(wav)
+                acordes = T.detectar_acordes(wav, permitidos)
                 if letra:
                     cuerpo = T.alinear_con_letra(letra, segmentos, acordes)
                 elif segmentos:
@@ -112,13 +113,19 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 print("\n>> Extrayendo acordes del PDF...")
                 cuerpo = pdf_acordes.extraer(ruta)
+                if not cuerpo.strip() or pdf_acordes.es_solo_diagramas(cuerpo):
+                    info = pdf_acordes.extraer_secuencia(ruta)
+                    if not info["acordes"]:
+                        self._json(200, {"ok": True, "cuerpo": "", "vacio": True})
+                        return
+                    print(f">> El PDF es un diagrama de acordes (sin letra). Acordes: {info['acordes']}")
+                    self._json(200, {"ok": True, "modo": "acordes",
+                                      "acordes": info["acordes"], "capo": info["capo"]})
+                    return
             finally:
                 os.unlink(ruta)
-            if not cuerpo.strip():
-                self._json(200, {"ok": True, "cuerpo": "", "vacio": True})
-                return
-            print(">> Acordes extraídos del PDF enviados a la app.")
-            self._json(200, {"ok": True, "cuerpo": cuerpo})
+            print(">> Letra y acordes extraídos del PDF enviados a la app.")
+            self._json(200, {"ok": True, "modo": "letra", "cuerpo": cuerpo})
         except Exception as e:  # noqa: BLE001
             print(f"!! Error: {e}")
             self._json(500, {"error": str(e)})

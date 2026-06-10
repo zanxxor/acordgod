@@ -65,6 +65,40 @@ def _insertar_acordes(letra: str, x0_letra: float, acordes: list[dict]) -> str:
     return "".join(out)
 
 
+_TOKEN_RE = re.compile(r"[A-Za-zÀ-ÿ#b♯♭/]+")
+
+
+def extraer_secuencia(ruta_pdf: str) -> dict:
+    """Para PDFs de diagramas de acordes (sin letra), extrae la progresión
+    de acordes (en orden, sin repetidos consecutivos) y el capo si aparece."""
+    acordes: list[str] = []
+    capo = None
+    with pdfplumber.open(ruta_pdf) as pdf:
+        for pagina in pdf.pages:
+            texto = pagina.extract_text() or ""
+            if capo is None:
+                m = re.search(r"capo\s*(?:en\s*el\s*traste\s*)?(\d+)", texto, re.IGNORECASE)
+                if m:
+                    capo = int(m.group(1))
+            for linea in texto.splitlines():
+                if "(cid:" in linea:
+                    continue
+                for tok in _TOKEN_RE.findall(linea):
+                    if CHORD_RE.match(tok):
+                        if not acordes or acordes[-1] != tok:
+                            acordes.append(tok)
+    return {"acordes": acordes, "capo": capo}
+
+
+def es_solo_diagramas(cuerpo: str) -> bool:
+    """True si el texto extraído es mayormente glifos sin mapear (cid:N),
+    típico de diagramas de digitación sin letra real."""
+    sin_marcas = re.sub(r"\[[^\]]*\]", "", cuerpo)
+    sin_marcas = re.sub(r"\(cid:\d+\)", "", sin_marcas)
+    palabras = re.findall(r"[A-Za-zÀ-ÿ]{2,}", sin_marcas)
+    return len(palabras) < 30
+
+
 def extraer(ruta_pdf: str) -> str:
     """Devuelve el cuerpo en formato AcordGod (letra con [Acordes]) extraído del PDF."""
     salida: list[str] = []
