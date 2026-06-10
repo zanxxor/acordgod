@@ -140,6 +140,7 @@ oh [Am]Dios y [F]Padre..."></textarea>
             <b style="font-size:.85rem">📎 Archivos de la canción</b>
             <div id="file-list"></div>
             <button class="small" onclick="document.getElementById('file-input').click()" style="margin-top:6px">＋ Subir archivo (PDF, MP3, MP4, imagen…)</button>
+            <button class="small" onclick="extraerDePDF()" style="margin-top:6px" title="Lee la partitura PDF adjunta y coloca sus acordes y letra en el editor">📄 Extraer acordes del PDF</button>
             <input type="file" id="file-input" class="hidden" multiple onchange="addFiles(this)">
           </div>
         </div>
@@ -454,6 +455,50 @@ async function transcribirAuto() {
     alert('No se pudo transcribir: ' + e.message);
   } finally {
     btn.disabled = false; btn.textContent = '🎙 Transcribir';
+  }
+}
+
+// ---------- Extraer acordes desde PDF ----------
+async function extraerDePDF() {
+  const s = getCurrent(); if (!s) return;
+  const files = await filesOf(currentId);
+  const pdfs = files.filter(f => (f.type || '').includes('pdf') || /\.pdf$/i.test(f.name));
+  if (!pdfs.length) { alert('Primero sube la partitura en PDF con "＋ Subir archivo".'); return; }
+  let pdf = pdfs[0];
+  if (pdfs.length > 1) {
+    const nombres = pdfs.map((f, i) => `${i + 1}. ${f.name}`).join('\n');
+    const sel = prompt(`Tienes varios PDF. Escribe el número del que quieres usar:\n${nombres}`, '1');
+    const idx = parseInt(sel, 10) - 1;
+    if (idx >= 0 && idx < pdfs.length) pdf = pdfs[idx]; else if (sel !== null) return;
+  }
+  try {
+    const r = await fetch(TRANS_URL + '/estado');
+    if (!r.ok) throw 0;
+  } catch {
+    alert('Esta función necesita el servidor local activo.\n\n1. Abre "servidor.bat" en C:\\PROYECTOS\\acordgod.\n2. Déjalo abierto y vuelve a intentar.');
+    return;
+  }
+  if (s.body.trim() && !confirm('Esto reemplazará el contenido actual del editor con lo extraído del PDF. ¿Continuar?')) return;
+  const btn = event.target;
+  btn.disabled = true; btn.textContent = '⏳ Leyendo PDF…';
+  try {
+    const fd = new FormData();
+    fd.append('file', pdf.blob, pdf.name);
+    const r = await fetch(TRANS_URL + '/extraer_pdf', { method: 'POST', body: fd });
+    const d = await r.json();
+    if (!r.ok || d.error) throw new Error(d.error || 'Error desconocido');
+    if (d.vacio || !d.cuerpo.trim()) {
+      alert('No se encontró texto en el PDF. Probablemente es una imagen escaneada (sin texto seleccionable), por lo que no se puede leer automáticamente.');
+      return;
+    }
+    s.body = d.cuerpo;
+    document.getElementById('song-body').value = s.body;
+    persist(); renderSheet(); renderMarks(); setMode('edit');
+    alert('Acordes y letra extraídos del PDF. Revisa el resultado: marca las secciones con #Coro, #Verso, etc., y corrige cualquier acorde mal ubicado.\n\nSi tienes el video de YouTube, puedes usar 🎙 Transcribir conservando esta letra para verificar/ajustar tiempos.');
+  } catch (e) {
+    alert('No se pudo leer el PDF: ' + e.message);
+  } finally {
+    btn.disabled = false; btn.textContent = '📄 Extraer acordes del PDF';
   }
 }
 

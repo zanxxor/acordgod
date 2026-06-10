@@ -6,10 +6,12 @@ Deja este servidor corriendo (doble clic en servidor.bat) y la app web
 mostrará el botón "Transcribir" activo. La app le envía el link de YouTube
 y este servidor devuelve la canción transcrita (letra + acordes).
 """
+import cgi
 import json
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+import pdf_acordes
 import transcribir as T
 
 PUERTO = 8765
@@ -45,6 +47,9 @@ class Handler(BaseHTTPRequestHandler):
             self._json(404, {"error": "ruta desconocida"})
 
     def do_POST(self):
+        if self.path == "/extraer_pdf":
+            self._extraer_pdf()
+            return
         if self.path != "/transcribir":
             self._json(404, {"error": "ruta desconocida"})
             return
@@ -84,6 +89,39 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(500, {"error": str(e)})
             except Exception:
                 pass
+
+    def _extraer_pdf(self):
+        import os
+        import tempfile
+
+        try:
+            ctype, pdict = cgi.parse_header(self.headers.get("Content-Type", ""))
+            if ctype != "multipart/form-data":
+                self._json(400, {"error": "Se esperaba un archivo PDF (multipart/form-data)."})
+                return
+            pdict["boundary"] = pdict["boundary"].encode("utf-8")
+            pdict["CONTENT-LENGTH"] = self.headers.get("Content-Length")
+            campos = cgi.parse_multipart(self.rfile, pdict)
+            archivos = campos.get("file")
+            if not archivos:
+                self._json(400, {"error": "No se recibió ningún archivo."})
+                return
+            with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
+                tmp.write(archivos[0])
+                ruta = tmp.name
+            try:
+                print("\n>> Extrayendo acordes del PDF...")
+                cuerpo = pdf_acordes.extraer(ruta)
+            finally:
+                os.unlink(ruta)
+            if not cuerpo.strip():
+                self._json(200, {"ok": True, "cuerpo": "", "vacio": True})
+                return
+            print(">> Acordes extraídos del PDF enviados a la app.")
+            self._json(200, {"ok": True, "cuerpo": cuerpo})
+        except Exception as e:  # noqa: BLE001
+            print(f"!! Error: {e}")
+            self._json(500, {"error": str(e)})
 
     def log_message(self, *args):  # silencia el log por petición
         pass
