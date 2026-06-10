@@ -424,14 +424,23 @@ async function transcribirAuto() {
     alert('El transcriptor no está activo.\n\n1. En tu PC, abre el archivo "servidor.bat" de la carpeta C:\\PROYECTOS\\acordgod.\n2. Deja esa ventana abierta.\n3. Vuelve a pulsar 🎙 Transcribir.\n\nNota: la transcripción procesa el audio en tu PC, por lo que no funciona desde el celular.');
     return;
   }
-  if (s.body.trim() && !confirm('Esta canción ya tiene contenido. ¿Reemplazarlo con la transcripción automática?')) return;
+  // Si ya hay letra escrita, se conserva y solo se colocan los acordes sobre ella.
+  let letra = '';
+  const letraSinAcordes = s.body.replace(/\[[^\]]*\]/g, '');
+  if (letraSinAcordes.trim()) {
+    if (confirm('Esta canción ya tiene letra.\n\nAceptar: conservar TU letra y colocarle los acordes según el audio (recomendado).\nCancelar: descartarla y transcribir todo desde cero.')) {
+      letra = letraSinAcordes;
+    } else if (!confirm('Se reemplazará todo el contenido con la transcripción automática. ¿Continuar?')) {
+      return;
+    }
+  }
   const btn = document.getElementById('btn-transcribir');
   btn.disabled = true; btn.textContent = '⏳ Transcribiendo… (1 a 5 min)';
   try {
     const r = await fetch(TRANS_URL + '/transcribir', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ url, titulo: s.title === 'Nueva alabanza' ? '' : s.title })
+      body: JSON.stringify({ url, letra, titulo: s.title === 'Nueva alabanza' ? '' : s.title })
     });
     const d = await r.json();
     if (!r.ok || d.error) throw new Error(d.error || 'Error desconocido');

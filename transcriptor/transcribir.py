@@ -160,6 +160,120 @@ def alinear(segmentos: list[dict], acordes: list[tuple[float, str]]) -> str:
     return "\n".join(lineas)
 
 
+def _norm_palabra(w: str) -> str:
+    w = unicodedata.normalize("NFKD", w.lower())
+    w = "".join(c for c in w if not unicodedata.combining(c))
+    return re.sub(r"[^a-zn0-9]", "", w)
+
+
+def _alinear_dp(user: list[dict], ws: list[dict]) -> None:
+    """Alinea las palabras de la letra del usuario con las palabras oídas por
+    Whisper (Needleman-Wunsch con similitud difusa) y copia los tiempos."""
+    import difflib
+
+    A = [_norm_palabra(u["w"]) for u in user]
+    B = [_norm_palabra(x["w"]) for x in ws]
+    n, m = len(A), len(B)
+    GAP = -0.4
+    dp = np.zeros((n + 1, m + 1))
+    bt = np.zeros((n + 1, m + 1), dtype=np.int8)
+    dp[1:, 0] = np.arange(1, n + 1) * GAP; bt[1:, 0] = 1
+    dp[0, 1:] = np.arange(1, m + 1) * GAP; bt[0, 1:] = 2
+    simcache: dict[tuple[str, str], float] = {}
+    for i in range(1, n + 1):
+        for j in range(1, m + 1):
+            par = (A[i - 1], B[j - 1])
+            s = simcache.get(par)
+            if s is None:
+                s = difflib.SequenceMatcher(None, *par).ratio()
+                simcache[par] = s
+            match = dp[i - 1][j - 1] + (s if s > 0.6 else -0.5)
+            arriba = dp[i - 1][j] + GAP
+            izq = dp[i][j - 1] + GAP
+            mejor = max(match, arriba, izq)
+            dp[i][j] = mejor
+            bt[i][j] = 0 if mejor == match else (1 if mejor == arriba else 2)
+    i, j = n, m
+    while i > 0 and j > 0:
+        if bt[i][j] == 0:
+            if simcache.get((A[i - 1], B[j - 1]), 0) > 0.6:
+                user[i - 1]["t"] = ws[j - 1]["t"]
+            i, j = i - 1, j - 1
+        elif bt[i][j] == 1:
+            i -= 1
+        else:
+            j -= 1
+
+
+def _interpolar_tiempos(user: list[dict]) -> None:
+    """Estima el tiempo de las palabras sin ancla interpolando entre vecinas."""
+    anclas = [(k, u["t"]) for k, u in enumerate(user) if u["t"] is not None]
+    if not anclas:
+        return
+    for k, u in enumerate(user):
+        if u["t"] is not None:
+            continue
+        prev = next((a for a in reversed(anclas) if a[0] < k), None)
+        sig = next((a for a in anclas if a[0] > k), None)
+        if prev and sig:
+            frac = (k - prev[0]) / (sig[0] - prev[0])
+            u["t"] = prev[1] + frac * (sig[1] - prev[1])
+        elif prev:
+            u["t"] = prev[1]
+        else:
+            u["t"] = sig[1]
+
+
+def alinear_con_letra(letra: str, segmentos: list[dict],
+                      acordes: list[tuple[float, str]]) -> str:
+    """Coloca los acordes detectados sobre la letra dada por el usuario.
+
+    Conserva las líneas tal cual (incluidos #Secciones y líneas vacías);
+    solo inserta [Acorde] antes de la palabra donde cae cada cambio.
+    """
+    ws = [w for seg in segmentos for w in seg["palabras"]]
+    lineas = letra.replace("\r", "").split("\n")
+    user = []
+    for i, ln in enumerate(lineas):
+        t = ln.strip()
+        if not t or t.startswith("#"):
+            continue
+        for tok in t.split():
+            user.append({"linea": i, "w": tok, "t": None})
+    if ws and user:
+        print(">> Alineando tu letra con el audio...")
+        _alinear_dp(user, ws)
+        anclados = sum(1 for u in user if u["t"] is not None)
+        print(f"   {anclados}/{len(user)} palabras ancladas al audio.")
+        _interpolar_tiempos(user)
+
+    por_linea: dict[int, list[dict]] = {}
+    for u in user:
+        por_linea.setdefault(u["linea"], []).append(u)
+
+    out, usados, sonando = [], set(), None
+    for i, ln in enumerate(lineas):
+        t = ln.strip()
+        if not t or t.startswith("#"):
+            out.append(ln)
+            continue
+        partes = []
+        for u in por_linea.get(i, []):
+            if u["t"] is not None:
+                pend = [
+                    (j, ac) for j, (tt, ac) in enumerate(acordes)
+                    if j not in usados and tt <= u["t"] + 0.3
+                ]
+                for j, _ in pend:
+                    usados.add(j)
+                if pend and pend[-1][1] != sonando:
+                    sonando = pend[-1][1]
+                    partes.append(f"[{sonando}]")
+            partes.append(u["w"] + " ")
+        out.append("".join(partes).strip())
+    return "\n".join(out)
+
+
 def limpiar_nombre(texto: str) -> str:
     texto = unicodedata.normalize("NFKD", texto).encode("ascii", "ignore").decode()
     return re.sub(r"[^\w\- ]", "", texto).strip()[:60] or "alabanza"
@@ -170,6 +284,8 @@ def main() -> None:
     ap = argparse.ArgumentParser(description="Transcriptor AcordGod")
     ap.add_argument("url", help="Link del video de YouTube")
     ap.add_argument("--titulo", default=None, help="Título de la alabanza")
+    ap.add_argument("--letra", default=None,
+                    help="Archivo .txt con la letra: los acordes se colocan sobre ella")
     args = ap.parse_args()
 
     wav, titulo_video = descargar_audio(args.url)
@@ -180,7 +296,10 @@ def main() -> None:
         print("!! No se detectó voz cantada. Se generarán solo los acordes.")
     acordes = detectar_acordes(wav)
 
-    if segmentos:
+    if args.letra:
+        letra = Path(args.letra).read_text(encoding="utf-8")
+        cuerpo = alinear_con_letra(letra, segmentos, acordes)
+    elif segmentos:
         cuerpo = "#Transcripción automática\n" + alinear(segmentos, acordes)
     else:
         cuerpo = "#Acordes detectados\n" + " ".join(

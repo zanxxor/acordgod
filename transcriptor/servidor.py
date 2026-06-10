@@ -62,9 +62,12 @@ class Handler(BaseHTTPRequestHandler):
                 print(f"\n>> Transcribiendo: {url}")
                 wav, titulo_video = T.descargar_audio(url)
                 titulo = datos.get("titulo") or titulo_video
+                letra = (datos.get("letra") or "").strip()
                 segmentos = T.transcribir_letra(wav)
                 acordes = T.detectar_acordes(wav)
-                if segmentos:
+                if letra:
+                    cuerpo = T.alinear_con_letra(letra, segmentos, acordes)
+                elif segmentos:
                     cuerpo = "#Transcripción automática\n" + T.alinear(segmentos, acordes)
                 else:
                     cuerpo = "#Acordes detectados\n" + " ".join(
