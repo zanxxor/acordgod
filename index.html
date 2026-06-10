@@ -105,6 +105,7 @@
       <div class="toolbar">
         <input type="text" id="song-title" placeholder="Título de la alabanza" style="flex:1; min-width:200px" oninput="saveCurrent()">
         <input type="text" id="song-yt" placeholder="Link de YouTube" style="flex:1; min-width:220px" onchange="saveCurrent(); loadVideo();">
+        <button id="btn-transcribir" onclick="transcribirAuto()" title="Escucha la canción del link y genera letra y acordes automáticamente (requiere servidor.bat activo en tu PC)">🎙 Transcribir</button>
         <div class="pill-group">
           <button id="tab-view" class="on" onclick="setMode('view')">👁 Vista</button>
           <button id="tab-edit" onclick="setMode('edit')">✏ Editar</button>
@@ -135,6 +136,12 @@ oh [Am]Dios y [F]Padre..."></textarea>
           <b>🎬 Video</b>
           <div id="player-box"><div id="yt-player"></div></div>
           <div class="marks" id="marks"></div>
+          <div class="marks">
+            <b style="font-size:.85rem">📎 Archivos de la canción</b>
+            <div id="file-list"></div>
+            <button class="small" onclick="document.getElementById('file-input').click()" style="margin-top:6px">＋ Subir archivo (PDF, MP3, MP4, imagen…)</button>
+            <input type="file" id="file-input" class="hidden" multiple onchange="addFiles(this)">
+          </div>
         </div>
       </div>
     </div>
@@ -213,6 +220,7 @@ function deleteSong(id, ev) {
   const s = songs.find(x => x.id === id);
   if (!confirm(`¿Eliminar "${s.title}"?`)) return;
   songs = songs.filter(x => x.id !== id); persist();
+  deleteSongFiles(id);
   if (currentId === id) { currentId = null; render(); }
   renderList();
 }
@@ -278,7 +286,7 @@ function updateTranspLabel() {
 function render() {
   document.getElementById('empty-state').classList.toggle('hidden', !!currentId);
   document.getElementById('song-area').classList.toggle('hidden', !currentId);
-  if (currentId) { renderSheet(); updateTranspLabel(); renderMarks(); }
+  if (currentId) { renderSheet(); updateTranspLabel(); renderMarks(); renderFiles(); }
 }
 
 // ---------- Render de la hoja ----------
@@ -400,6 +408,137 @@ window.onYouTubeIframeAPIReady = function() { ytReady = true; loadVideo(); };
 const tag = document.createElement('script');
 tag.src = 'https://www.youtube.com/iframe_api';
 document.head.appendChild(tag);
+
+// ---------- Transcripción automática ----------
+const TRANS_URL = 'http://localhost:8765';
+
+async function transcribirAuto() {
+  const s = getCurrent();
+  if (!s) { alert('Primero crea o selecciona una alabanza.'); return; }
+  const url = document.getElementById('song-yt').value.trim();
+  if (!url) { alert('Primero pega el link de YouTube de la canción.'); return; }
+  try {
+    const r = await fetch(TRANS_URL + '/estado');
+    if (!r.ok) throw 0;
+  } catch {
+    alert('El transcriptor no está activo.\n\n1. En tu PC, abre el archivo "servidor.bat" de la carpeta C:\\PROYECTOS\\acordgod.\n2. Deja esa ventana abierta.\n3. Vuelve a pulsar 🎙 Transcribir.\n\nNota: la transcripción procesa el audio en tu PC, por lo que no funciona desde el celular.');
+    return;
+  }
+  if (s.body.trim() && !confirm('Esta canción ya tiene contenido. ¿Reemplazarlo con la transcripción automática?')) return;
+  const btn = document.getElementById('btn-transcribir');
+  btn.disabled = true; btn.textContent = '⏳ Transcribiendo… (1 a 5 min)';
+  try {
+    const r = await fetch(TRANS_URL + '/transcribir', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url, titulo: s.title === 'Nueva alabanza' ? '' : s.title })
+    });
+    const d = await r.json();
+    if (!r.ok || d.error) throw new Error(d.error || 'Error desconocido');
+    s.body = d.cuerpo;
+    if (d.titulo && (!s.title || s.title === 'Nueva alabanza')) s.title = d.titulo;
+    document.getElementById('song-title').value = s.title;
+    document.getElementById('song-body').value = s.body;
+    persist(); renderList(); renderSheet(); renderMarks(); setMode('edit');
+    alert('¡Transcripción lista! Es un borrador: corrige la letra y los acordes que haga falta, y marca las secciones con #Coro, #Verso 1, etc.');
+  } catch (e) {
+    alert('No se pudo transcribir: ' + e.message);
+  } finally {
+    btn.disabled = false; btn.textContent = '🎙 Transcribir';
+  }
+}
+
+// ---------- Archivos adjuntos (IndexedDB) ----------
+let db = null;
+const dbReady = new Promise(res => {
+  const rq = indexedDB.open('acordgod', 1);
+  rq.onupgradeneeded = () => {
+    const st = rq.result.createObjectStore('files', { keyPath: 'id', autoIncrement: true });
+    st.createIndex('songId', 'songId');
+  };
+  rq.onsuccess = () => { db = rq.result; res(); };
+  rq.onerror = () => res();
+});
+
+function filesStore(mode) { return db.transaction('files', mode).objectStore('files'); }
+
+async function addFiles(input) {
+  await dbReady;
+  if (!db || !currentId) return;
+  for (const f of input.files) {
+    await new Promise((res, rej) => {
+      const r = filesStore('readwrite').add({ songId: currentId, name: f.name, type: f.type, blob: f });
+      r.onsuccess = res; r.onerror = () => rej(r.error);
+    }).catch(e => alert('No se pudo guardar ' + f.name + ': ' + e));
+  }
+  input.value = '';
+  renderFiles();
+}
+
+function filesOf(songId) {
+  return new Promise(res => {
+    if (!db) return res([]);
+    const out = [];
+    const rq = filesStore('readonly').index('songId').openCursor(IDBKeyRange.only(songId));
+    rq.onsuccess = () => { const c = rq.result; if (c) { out.push(c.value); c.continue(); } else res(out); };
+    rq.onerror = () => res([]);
+  });
+}
+
+function fileIcon(type) {
+  if (type.includes('pdf')) return '📄';
+  if (type.startsWith('audio')) return '🎵';
+  if (type.startsWith('video')) return '🎬';
+  if (type.startsWith('image')) return '🖼';
+  return '📎';
+}
+
+async function renderFiles() {
+  await dbReady;
+  const el = document.getElementById('file-list');
+  if (!el || !currentId) return;
+  const files = await filesOf(currentId);
+  el.innerHTML = files.map(f =>
+    `<div class="mark-row">
+       <span>${fileIcon(f.type || '')}</span>
+       <span class="name" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(f.name)}</span>
+       <button class="small" onclick="openFile(${f.id})" title="Abrir">👁</button>
+       <button class="small" onclick="downloadFile(${f.id})" title="Descargar">⬇</button>
+       <button class="small" onclick="delFile(${f.id})" title="Eliminar">✕</button>
+     </div>`).join('') ||
+    '<div style="color:var(--muted);font-size:.82rem;padding:4px 0">Sin archivos. Sube la partitura PDF, la letra, MP3, MP4…</div>';
+}
+
+function getFile(id) {
+  return new Promise(res => {
+    const rq = filesStore('readonly').get(id);
+    rq.onsuccess = () => res(rq.result); rq.onerror = () => res(null);
+  });
+}
+
+async function openFile(id) {
+  const f = await getFile(id); if (!f) return;
+  window.open(URL.createObjectURL(f.blob), '_blank');
+}
+
+async function downloadFile(id) {
+  const f = await getFile(id); if (!f) return;
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(f.blob);
+  a.download = f.name;
+  a.click();
+}
+
+function delFile(id) {
+  if (!confirm('¿Eliminar este archivo?')) return;
+  filesStore('readwrite').delete(id).onsuccess = renderFiles;
+}
+
+async function deleteSongFiles(songId) {
+  await dbReady; if (!db) return;
+  const files = await filesOf(songId);
+  for (const f of files) filesStore('readwrite').delete(f.id);
+}
 
 // ---------- Export / Import ----------
 function exportSongs() {
