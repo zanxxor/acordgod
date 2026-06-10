@@ -72,6 +72,13 @@
   .mark-row .t { color: var(--muted); font-family: Consolas, monospace; }
   .hidden { display: none !important; }
   .empty { color: var(--muted); padding: 40px; text-align: center; }
+
+  .chord-timeline { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; max-height: 220px; overflow-y: auto; }
+  .chord-chip { display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 5px 9px; border: 1px solid var(--border); border-radius: 6px; cursor: pointer; min-width: 46px; }
+  .chord-chip:hover { border-color: var(--accent); }
+  .chord-chip .nm { color: var(--chord); font-weight: 700; font-size: 1rem; }
+  .chord-chip .tm { color: var(--muted); font-size: .72rem; font-family: Consolas, monospace; }
+  .chord-chip.now { background: rgba(184,145,47,0.15); outline: 2px solid var(--accent); }
 </style>
 </head>
 <body>
@@ -106,6 +113,7 @@
         <input type="text" id="song-title" placeholder="Título de la alabanza" style="flex:1; min-width:200px" oninput="saveCurrent()">
         <input type="text" id="song-yt" placeholder="Link de YouTube" style="flex:1; min-width:220px" onchange="saveCurrent(); loadVideo();">
         <button id="btn-transcribir" onclick="transcribirAuto()" title="Escucha la canción del link y genera letra y acordes automáticamente (requiere servidor.bat activo en tu PC)">🎙 Transcribir</button>
+        <button id="btn-acordes-auto" onclick="acordesAuto()" title="Como Chordify: analiza todo el audio y genera la progresión de acordes con sus tiempos, sin necesitar letra ni PDF (requiere servidor.bat activo en tu PC)">🎼 Acordes automáticos</button>
         <div class="pill-group">
           <button id="tab-view" class="on" onclick="setMode('view')">👁 Vista</button>
           <button id="tab-edit" onclick="setMode('edit')">✏ Editar</button>
@@ -136,6 +144,10 @@ oh [Am]Dios y [F]Padre..."></textarea>
           <b>🎬 Video</b>
           <div id="player-box"><div id="yt-player"></div></div>
           <div class="marks" id="marks"></div>
+          <div class="marks" id="chord-timeline-box">
+            <b style="font-size:.85rem">🎼 Progresión de acordes</b>
+            <div id="chord-timeline" class="chord-timeline"></div>
+          </div>
           <div class="marks">
             <b style="font-size:.85rem">📎 Archivos de la canción</b>
             <div id="file-list"></div>
@@ -268,16 +280,16 @@ function setNotation(n) {
   notation = n; localStorage.setItem('acordgod-notation', n);
   document.getElementById('not-en').classList.toggle('on', n==='en');
   document.getElementById('not-es').classList.toggle('on', n==='es');
-  if (currentId) renderSheet();
+  if (currentId) { renderSheet(); renderChordTimeline(); }
 }
 
 function transpose(d) {
   const s = getCurrent(); if (!s) return;
   s.transpose = ((s.transpose||0) + d + 12) % 12 * 1;
   if (s.transpose > 6) s.transpose -= 12; // mostrar como -5..+6
-  persist(); renderSheet(); updateTranspLabel();
+  persist(); renderSheet(); renderChordTimeline(); updateTranspLabel();
 }
-function resetTranspose() { const s=getCurrent(); if(!s) return; s.transpose=0; persist(); renderSheet(); updateTranspLabel(); }
+function resetTranspose() { const s=getCurrent(); if(!s) return; s.transpose=0; persist(); renderSheet(); renderChordTimeline(); updateTranspLabel(); }
 function updateTranspLabel() {
   const s = getCurrent();
   const t = s ? (s.transpose||0) : 0;
@@ -287,7 +299,7 @@ function updateTranspLabel() {
 function render() {
   document.getElementById('empty-state').classList.toggle('hidden', !!currentId);
   document.getElementById('song-area').classList.toggle('hidden', !currentId);
-  if (currentId) { renderSheet(); updateTranspLabel(); renderMarks(); renderFiles(); }
+  if (currentId) { renderSheet(); updateTranspLabel(); renderMarks(); renderFiles(); renderChordTimeline(); }
 }
 
 // ---------- Render de la hoja ----------
@@ -383,6 +395,7 @@ function highlightLoop() {
     document.querySelectorAll('.sec').forEach(el => {
       el.classList.toggle('playing', el.dataset.sec === active && active !== null);
     });
+    highlightChordTimeline(t);
   }, 500);
 }
 
@@ -507,6 +520,67 @@ async function extraerDePDF() {
   } finally {
     btn.disabled = false; btn.textContent = '📄 Extraer acordes del PDF';
   }
+}
+
+// ---------- Acordes automáticos (estilo Chordify) ----------
+async function acordesAuto() {
+  const s = getCurrent(); if (!s) return;
+  const url = document.getElementById('song-yt').value.trim();
+  if (!url) { alert('Primero pega el link de YouTube de la canción.'); return; }
+  try {
+    const r = await fetch(TRANS_URL + '/estado');
+    if (!r.ok) throw 0;
+  } catch {
+    alert('Esta función necesita el servidor local activo.\n\n1. Abre "servidor.bat" en C:\\PROYECTOS\\acordgod.\n2. Déjalo abierto y vuelve a intentar.');
+    return;
+  }
+  const btn = document.getElementById('btn-acordes-auto');
+  btn.disabled = true; btn.textContent = '⏳ Analizando… (1 a 5 min)';
+  try {
+    const r = await fetch(TRANS_URL + '/acordes_auto', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url })
+    });
+    const d = await r.json();
+    if (!r.ok || d.error) throw new Error(d.error || 'Error desconocido');
+    s.chordTimeline = d.acordes; // [[t, "Am"], ...]
+    persist(); renderChordTimeline();
+    alert(`¡Listo! Se detectaron ${d.acordes.length} cambios de acorde a lo largo de la canción.\n\nAparecen en "🎼 Progresión de acordes": haz clic en uno para saltar a ese punto del video, y se irán resaltando solos mientras suena.\n\nEs una detección automática: revisa los acordes contra tu oído u otra referencia.`);
+  } catch (e) {
+    alert('No se pudo analizar: ' + e.message);
+  } finally {
+    btn.disabled = false; btn.textContent = '🎼 Acordes automáticos';
+  }
+}
+
+function renderChordTimeline() {
+  const s = getCurrent();
+  const box = document.getElementById('chord-timeline-box');
+  const el = document.getElementById('chord-timeline');
+  if (!s || !s.chordTimeline || !s.chordTimeline.length) { box.classList.add('hidden'); return; }
+  box.classList.remove('hidden');
+  const t = s.transpose || 0;
+  el.innerHTML = s.chordTimeline.map(([time, ac], i) =>
+    `<div class="chord-chip" data-i="${i}" data-t="${time}" onclick="seekTo(${time})">
+       <span class="nm">${esc(renderChord(ac, t))}</span>
+       <span class="tm">${fmtTime(time)}</span>
+     </div>`).join('');
+}
+
+function highlightChordTimeline(tiempo) {
+  const s = getCurrent();
+  if (!s || !s.chordTimeline || !s.chordTimeline.length) return;
+  let activo = 0;
+  for (let i = 0; i < s.chordTimeline.length; i++) {
+    if (s.chordTimeline[i][0] <= tiempo) activo = i; else break;
+  }
+  const el = document.getElementById('chord-timeline');
+  el.querySelectorAll('.chord-chip').forEach((chip, i) => {
+    chip.classList.toggle('now', i === activo);
+  });
+  const actual = el.querySelector('.chord-chip.now');
+  if (actual) actual.scrollIntoView({ block: 'nearest', inline: 'center', behavior: 'smooth' });
 }
 
 // ---------- Archivos adjuntos (IndexedDB) ----------

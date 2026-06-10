@@ -50,6 +50,9 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/extraer_pdf":
             self._extraer_pdf()
             return
+        if self.path == "/acordes_auto":
+            self._acordes_auto()
+            return
         if self.path != "/transcribir":
             self._json(404, {"error": "ruta desconocida"})
             return
@@ -85,6 +88,33 @@ class Handler(BaseHTTPRequestHandler):
             finally:
                 _lock.release()
         except Exception as e:  # noqa: BLE001 - se reporta el error a la app
+            print(f"!! Error: {e}")
+            try:
+                self._json(500, {"error": str(e)})
+            except Exception:
+                pass
+
+    def _acordes_auto(self):
+        try:
+            largo = int(self.headers.get("Content-Length", 0))
+            datos = json.loads(self.rfile.read(largo) or b"{}")
+            url = (datos.get("url") or "").strip()
+            if not url:
+                self._json(400, {"error": "Falta el link de YouTube."})
+                return
+            if not _lock.acquire(blocking=False):
+                self._json(409, {"error": "Ya hay un análisis en curso. Espera a que termine."})
+                return
+            try:
+                print(f"\n>> Analizando acordes (estilo Chordify): {url}")
+                wav, _titulo = T.descargar_audio(url)
+                acordes = T.detectar_acordes(wav)
+                wav.unlink(missing_ok=True)
+                print(f">> {len(acordes)} acordes enviados a la app.")
+                self._json(200, {"ok": True, "acordes": acordes})
+            finally:
+                _lock.release()
+        except Exception as e:  # noqa: BLE001
             print(f"!! Error: {e}")
             try:
                 self._json(500, {"error": str(e)})
